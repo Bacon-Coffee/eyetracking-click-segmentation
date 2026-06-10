@@ -1,0 +1,14 @@
+{
+  "workbench.editorAssociations": {
+    "*.wav": "wavPreview.audioPreview",
+    "*.mp3": "wavPreview.audioPreview",
+    "*.m4a": "wavPreview.audioPreview"
+  },
+  "WavPreview.autoAnalyze": true,
+  "WavPreview.playerDefault": {
+    "initialVolume": 50
+  },
+  "WavPreview.analyzeDefault": {
+    "spectrogramVisible": false
+  }
+}
