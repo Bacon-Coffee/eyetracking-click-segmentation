@@ -12,8 +12,14 @@ figures/*
 # generated coarse seeds (reproducible via `python src/export_seeds.py`);
 # human-reviewed ground-truth labels/<name>.csv are NOT ignored
 labels/*.seed.csv
+# verify outputs (reproducible via `python src/verify.py`); the COMMITTED
+# adjudication queue labels/<name>.verify-review.csv is NOT ignored
+labels/*.verified.csv
 
 # python
 __pycache__/
 .ipynb_checkpoints/
 my_documents/
+
+# cut outputs (large, reproducible via `python src/cut.py` from committed labels/*.cuts.csv)
+data/segments/
