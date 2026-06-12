@@ -1,4 +1,5 @@
 # Mouse-Click Sound Event Detection & Audio Segmentation
+
 # 鼠标点击声事件检测与音频切分
 
 > Detect mouse-click sounds in eye-tracking experiment recordings and cut the audio at each confirmed click's precise onset, so that audio and screen video can be merged with the best possible synchronization.
@@ -20,12 +21,12 @@ The two streams must be merged afterwards. The anchor we use is a behavioral eve
 
 **Doing it all by hand isn't precise enough.** A mouse click lasts only a few thousandths of a second, and the recordings contain thousands of click-like sounds. Looking at the waveform and placing a mark by eye, a person is off by about 10–20 ms — too coarse for our goal — and different people (or the same person when tired) place the mark slightly differently. A hand-placed mark also can't be checked or reproduced later.
 
-**Letting a pre-trained model do it all isn't precise enough either.** Pre-trained audio models (e.g. PANNs) are good at answering *"is there a click around here?"*, but only to within a few tens of milliseconds — they were built to recognize sounds, not to pinpoint the exact moment a sound starts. We also have just 4 recordings, far too little data to train our own model. Classical signal processing works directly on the raw waveform, so it can pinpoint the start of a click much more precisely, and it always gives the same answer for the same input.
+**Letting a pre-trained model do it all isn't precise enough either.** Pre-trained audio models (e.g. PANNs) are good at answering _"is there a click around here?"_, but only to within a few tens of milliseconds — they were built to recognize sounds, not to pinpoint the exact moment a sound starts. We also have just 4 recordings, far too little data to train our own model. Classical signal processing works directly on the raw waveform, so it can pinpoint the start of a click much more precisely, and it always gives the same answer for the same input.
 
 **So we split the work between the two:**
 
 - **The code does the precise, repetitive work:** scan the audio and propose likely clicks; take each human-confirmed click and pin it to its exact starting moment using one fixed rule (so every mark is placed the same way); filter out false alarms (keyboard taps, table knocks, etc.); and cut the audio exactly at those points.
-- **The human does the judgment work:** confirm "yes, this is a real click" — a rough mark anywhere near it is enough, the code sharpens it; review the small number of cases the code flags as uncertain; and decide *which* 7 clicks are the ones that switched the question — that requires knowing the experiment, which no algorithm can.
+- **The human does the judgment work:** confirm "yes, this is a real click" — a rough mark anywhere near it is enough, the code sharpens it; review the small number of cases the code flags as uncertain; and decide _which_ 7 clicks are the ones that switched the question — that requires knowing the experiment, which no algorithm can.
 
 In one line: **people judge, code measures.** Each side does what the other can't.
 
@@ -42,11 +43,11 @@ Detect the **mouse-click sound events** in each recording and **cut the audio at
 Four paired audio/video samples, matched by filename prefix:
 
 | Prefix | Audio (`audio/`) | Video (`video/`) | Decoded WAV (`data/wav/`) |
-| --- | --- | --- | --- |
-| `#` | `# IntlSB20.m4a` | `#.mp4` | `IntlSB20.wav` |
-| `%` | `% F67.m4a` | `%.mp4` | `F67.wav` |
-| `@` | `@ BJ C3.m4a` | `@.mp4` | `BJ_C3.wav` |
-| `！` | `！BJ C1.m4a` | `！.mp4` | `BJ_C1.wav` |
+| ------ | ---------------- | ---------------- | ------------------------- |
+| `#`    | `# IntlSB20.m4a` | `#.mp4`          | `IntlSB20.wav`            |
+| `%`    | `% F67.m4a`      | `%.mp4`          | `F67.wav`                 |
+| `@`    | `@ BJ C3.m4a`    | `@.mp4`          | `BJ_C3.wav`               |
+| `！`   | `！BJ C1.m4a`    | `！.mp4`         | `BJ_C1.wav`               |
 
 - Audio is `.m4a` (AAC, lossy). All processing happens on the decoded **48 kHz / mono / float32 WAV** — never on the m4a directly (AAC transient smearing, encoder priming delay).
 - Filenames contain special / full-width characters: **always quote paths in the shell**; code treats paths literally.
@@ -67,18 +68,18 @@ Classical DSP is used for sample-accurate localization (deep taggers such as PAN
 
 **Cutting (step 6, done).** Each recording was cut at its 7 confirmed marker clicks into 8 segments; all bit-exact round-trip assertions pass:
 
-| File | Cut points | Segments | Segment durations (s) |
-| --- | --: | --: | --- |
-| BJ_C1 | 7 | 8 | 1.92 / 40.98 / 58.47 / 42.55 / 57.02 / 148.96 / 39.70 / 3.13 |
-| BJ_C3 | 7 | 8 | 3.19 / 44.83 / 42.53 / 33.21 / 37.11 / 69.93 / 46.26 / 1.00 |
-| F67 | 7 | 8 | 4.51 / 67.29 / 75.49 / 72.72 / 35.77 / 79.82 / 16.95 / 2.73 |
-| IntlSB20 | 7 | 8 | 8.47 / 77.08 / 86.10 / 63.29 / 63.83 / 49.25 / 16.04 / 2.02 |
+| File     | Cut points | Segments | Segment durations (s)                                        |
+| -------- | ---------: | -------: | ------------------------------------------------------------ |
+| BJ_C1    |          7 |        8 | 1.92 / 40.98 / 58.47 / 42.55 / 57.02 / 148.96 / 39.70 / 3.13 |
+| BJ_C3    |          7 |        8 | 3.19 / 44.83 / 42.53 / 33.21 / 37.11 / 69.93 / 46.26 / 1.00  |
+| F67      |          7 |        8 | 4.51 / 67.29 / 75.49 / 72.72 / 35.77 / 79.82 / 16.95 / 2.73  |
+| IntlSB20 |          7 |        8 | 8.47 / 77.08 / 86.10 / 63.29 / 63.83 / 49.25 / 16.04 / 2.02  |
 
 Segments are written to `data/segments/<name>/<name>_seg<k>.wav` (gitignored, regenerable).
 
 **Onset precision (snap_v2 sensitivity, measured).** Varying the backtrack midpoint coefficient (0.5 → 0.35 / 0.65) shifts onsets by a **median of 0.15–0.35 ms** (all < 0.5 ms), p95 1.8–7.5 ms; plus a known systematic bias ≲1 ms early (zero-phase filtering forward smear). Sub-millisecond median ⇒ the cut points are robust at the sample level for ordinary clicks; the few-ms tail is concentrated in low-prominence / dense clicks, which go to the human adjudication queue.
 
-**Verification (step 4, done).** 1,830 down candidates across the 4 files: 23.9% auto-accepted, 828 sent to human adjudication, 564 auto-rejected; per-file details and threshold derivation in `docs/verify-report.md`. (Note: full-candidate verification serves annotation completeness; the *cut* targets are only the 7 markers per file.)
+**Verification (step 4, done).** 1,830 down candidates across the 4 files: 23.9% auto-accepted, 828 sent to human adjudication, 564 auto-rejected; per-file details and threshold derivation in `docs/verify-report.md`. (Note: full-candidate verification serves annotation completeness; the _cut_ targets are only the 7 markers per file.)
 
 Known caveat: IntlSB20's 7 cut points are single-transient confirmations; if its markers were down+up pairs with the down buried in noise, its cut semantics may be late by ~0.1 s relative to the other files (documented in `docs/cut-report.md`).
 
@@ -92,7 +93,7 @@ Known caveat: IntlSB20's 7 cut points are single-transient confirmations; if its
 
 Audio can be cut with sample-level precision. **The video should also be cut precisely** (at the question-switch frame) so that the merged result has the best possible A/V synchronization — video frame granularity (e.g. ~33 ms at 30 fps) will then be the limiting factor on that side.
 
-There is also a **systematic error inherent to the merge anchor**: after the physical mouse click, the computer needs time to process the input and render the next question (input handling, rendering, display refresh). The click *sound* therefore precedes the visible *screen switch* by a small device-dependent latency. Two ways to handle it:
+There is also a **systematic error inherent to the merge anchor**: after the physical mouse click, the computer needs time to process the input and render the next question (input handling, rendering, display refresh). The click _sound_ therefore precedes the visible _screen switch_ by a small device-dependent latency. Two ways to handle it:
 
 1. **If the experiment does not require perfect A/V sync**, this latency (typically tens of milliseconds) can be ignored.
 2. **If it cannot be ignored**, run a dedicated **latency-measurement experiment** on the same hardware/software setup: simultaneously record the click sound and the screen, measure the offset between click-sound onset and the first changed frame, and apply the measured value as a constant correction when aligning.
@@ -138,7 +139,7 @@ pytest                      # frozen-logic tests (snap_v2 / verify / cut)
 
 ---
 
-## 中文
+## project
 
 ### 1. 背景
 
@@ -175,11 +176,11 @@ pytest                      # frozen-logic tests (snap_v2 / verify / cut)
 4 组音视频样本，按文件名前缀配对：
 
 | 前缀 | 音频（`audio/`） | 视频（`video/`） | 解码 WAV（`data/wav/`） |
-| --- | --- | --- | --- |
-| `#` | `# IntlSB20.m4a` | `#.mp4` | `IntlSB20.wav` |
-| `%` | `% F67.m4a` | `%.mp4` | `F67.wav` |
-| `@` | `@ BJ C3.m4a` | `@.mp4` | `BJ_C3.wav` |
-| `！` | `！BJ C1.m4a` | `！.mp4` | `BJ_C1.wav` |
+| ---- | ---------------- | ---------------- | ----------------------- |
+| `#`  | `# IntlSB20.m4a` | `#.mp4`          | `IntlSB20.wav`          |
+| `%`  | `% F67.m4a`      | `%.mp4`          | `F67.wav`               |
+| `@`  | `@ BJ C3.m4a`    | `@.mp4`          | `BJ_C3.wav`             |
+| `！` | `！BJ C1.m4a`    | `！.mp4`         | `BJ_C1.wav`             |
 
 - 音频为 `.m4a`（AAC 有损）。全部处理在解码后的 **48 kHz / 单声道 / float32 WAV** 上进行——绝不直接处理 m4a（AAC 瞬态涂抹、编码器 priming delay）。
 - 文件名含特殊/全角字符：**shell 中务必对路径加引号**；代码按字面字节处理路径。
@@ -200,12 +201,12 @@ pytest                      # frozen-logic tests (snap_v2 / verify / cut)
 
 **切割（第 6 步，已完成）。** 每段录音在 7 个已确认标记点击处切成 8 个片段，全部 bit-exact 往返断言通过：
 
-| 文件 | 切点 | 片段 | 片段时长（s） |
-| --- | --: | --: | --- |
-| BJ_C1 | 7 | 8 | 1.92 / 40.98 / 58.47 / 42.55 / 57.02 / 148.96 / 39.70 / 3.13 |
-| BJ_C3 | 7 | 8 | 3.19 / 44.83 / 42.53 / 33.21 / 37.11 / 69.93 / 46.26 / 1.00 |
-| F67 | 7 | 8 | 4.51 / 67.29 / 75.49 / 72.72 / 35.77 / 79.82 / 16.95 / 2.73 |
-| IntlSB20 | 7 | 8 | 8.47 / 77.08 / 86.10 / 63.29 / 63.83 / 49.25 / 16.04 / 2.02 |
+| 文件     | 切点 | 片段 | 片段时长（s）                                                |
+| -------- | ---: | ---: | ------------------------------------------------------------ |
+| BJ_C1    |    7 |    8 | 1.92 / 40.98 / 58.47 / 42.55 / 57.02 / 148.96 / 39.70 / 3.13 |
+| BJ_C3    |    7 |    8 | 3.19 / 44.83 / 42.53 / 33.21 / 37.11 / 69.93 / 46.26 / 1.00  |
+| F67      |    7 |    8 | 4.51 / 67.29 / 75.49 / 72.72 / 35.77 / 79.82 / 16.95 / 2.73  |
+| IntlSB20 |    7 |    8 | 8.47 / 77.08 / 86.10 / 63.29 / 63.83 / 49.25 / 16.04 / 2.02  |
 
 片段输出至 `data/segments/<name>/<name>_seg<k>.wav`（gitignored，可重生成）。
 
