@@ -2,7 +2,9 @@
 
 Plain-assert script (no pytest dependency):  python3 tests/test_snap_v2.py
 Covers: dsp dB helpers, synthetic-onset recovery, precursor robustness,
-window clamping, low-prominence doubt flag, and the SV-export round-trip.
+window clamping, low-prominence doubt flag, the SV-export round-trip, the min-gap
+merge, and the snap_v1->v2 decision (precursor defeats v1 not v2 + seed-cleanliness
+invariants — see docs/snap-v1-clean-audit.md).
 """
 
 import sys
@@ -113,6 +115,57 @@ def test_merge_close_peaks():
     print("ok  min-gap merge keeps strongest")
 
 
+def test_precursor_defeats_v1_not_v2():
+    """Locks the snap_v1->snap_v2 decision (docs/snap-v1-clean-audit.md): on a click
+    with a real ~15-25 ms precursor that leaves NO quiet 1 ms foot before the main
+    rise, RETIRED snap_v1 cannot arm and FALLS BACK, while peak-relative snap_v2
+    lands on the main foot. This is the mechanism behind the ~55% clean isolated
+    snap_v1 fallback — file-independent so it can't silently rot when seeds change."""
+    onset = SR // 2
+    pre = onset - round(0.015 * SR)                      # precursor 15 ms before main
+    y = synth_click(SR, onset, amp=0.5, decay_ms=4.0, noise=1e-3)
+    # slow-decaying precursor (-12 dB, 8 ms) fills the pre-onset gap -> no quiet foot
+    y += synth_click(SR, pre, amp=0.5 * dsp.db_gain(-12.0), decay_ms=8.0, noise=0.0, seed=1)
+    env = dsp.hp_rms_envelope(y, SR)
+    mark = onset
+
+    v1 = snap.snap_one(env, mark, SR)
+    assert v1.fallback, "snap_v1 must FALL BACK on the precursor-laden click"
+
+    w = snap.windows_from_marks([mark], len(env), SR)[0]
+    v2 = snap.snap_v2_one(env, w, SR)
+    err_ms = abs(v2.sample - onset) / SR * 1000.0
+    assert not v2.fallback, "snap_v2 must NOT be doubt (clear main peak)"
+    assert err_ms <= 1.0, f"snap_v2 onset error {err_ms:.2f} ms > 1 ms"
+    print(f"ok  precursor defeats snap_v1 (fallback) not snap_v2 (|err|={err_ms:.2f} ms)")
+
+
+def test_seed_cleanliness_invariants():
+    """Locks that merge_close_peaks removes the two seed pollutions named in the
+    report — exact-duplicate rows and 6-11 ms periodic-interference pairs. After
+    merge, survivors are >= 30 ms apart, with no duplicate and no 6-11 ms gap."""
+    ms = lambda x: round(x / 1000 * SR)
+    env = np.zeros(120_000, dtype=np.float32)
+    a0 = 10_000
+    peaks = [a0, a0, a0 + ms(7), a0 + ms(14)]            # dup + two 7 ms members
+    b0 = a0 + ms(14) + ms(35)                            # next cluster, >30 ms after A
+    peaks += [b0, b0 + ms(10)]                           # 10 ms interference pair
+    peaks += [b0 + ms(80)]                               # a clean well-separated peak
+    peaks = np.array(sorted(peaks))
+    for i, p in enumerate(peaks):
+        env[p] = 0.1 + 0.01 * i                          # distinct amps -> deterministic
+
+    merged = es.merge_close_peaks(peaks, env, SR)
+    gaps = np.diff(merged)
+    min_gap = round(es.MIN_PEAK_GAP_MS / 1000 * SR)
+    assert len(merged) == len(np.unique(merged)), "exact duplicates survived merge"
+    assert (gaps >= min_gap).all(), f"gap < {es.MIN_PEAK_GAP_MS} ms survived: {list(gaps)}"
+    gaps_ms = gaps / SR * 1000.0
+    assert not ((gaps_ms >= 6) & (gaps_ms <= 11)).any(), "6-11 ms interference pair survived"
+    print(f"ok  seed cleanliness: {len(peaks)}->{len(merged)} peaks "
+          f"(no dup / no 6-11 ms / all >= {es.MIN_PEAK_GAP_MS:g} ms)")
+
+
 if __name__ == "__main__":
     test_db_helpers()
     test_synthetic_onset()
@@ -121,4 +174,6 @@ if __name__ == "__main__":
     test_low_prominence_doubt()
     test_sv_roundtrip()
     test_merge_close_peaks()
+    test_precursor_defeats_v1_not_v2()
+    test_seed_cleanliness_invariants()
     print("\nALL PASS")
