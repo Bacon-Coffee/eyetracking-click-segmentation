@@ -22,13 +22,22 @@ Three checks the protocol requires BEFORE freezing snap_v2 / opening annotation:
                         from the two upstream bugs that inflated the original 60%.
                         Writes docs/snap-v1-clean-audit.md (committed text record).
 
-Outputs: printed tables + PNGs in figures/. clean_audit also writes a committed .md.
-Read-only w.r.t. audio/labels.
+  adjudication()        data-tail queues — flag the two leftover subsets for human
+                        裁decision: (A) low-prominence (range_db < 12 dB) suspected-
+                        noise candidates and (B) sub-30 ms adjacent down-onset pairs
+                        (the over-detection ceiling). The rule only FLAGS; a human
+                        prunes against the audio. Writes docs/adjudication-queue.md +
+                        labels/<name>.review.csv (both committed).
+
+Outputs: printed tables + PNGs in figures/. clean_audit / adjudication also write
+committed text records (and adjudication the per-file review CSVs). Read-only w.r.t.
+audio/seeds.
 
 Usage:
     python src/guardrails.py                 # all three checks on BJ_C3 + BJ_C1
     python src/guardrails.py sensitivity BJ_C1
     python src/guardrails.py clean_audit     # snap_v1 fallback on clean seeds (all 4)
+    python src/guardrails.py adjudication    # low-prominence + sub-30 ms queues (all 4)
 """
 
 from __future__ import annotations
@@ -450,12 +459,147 @@ def clean_audit_report(name: str | None = None) -> Path:
     return md_path
 
 
+# --- data-tail adjudication: low-prominence + sub-30 ms onset pairs ------------
+
+_REVIEW_FIELDS = ["sample", "time_s", "type", "reason", "value"]
+
+
+def adjudication_flags(results: list, sr: int,
+                       min_prom_db: float = snap.MIN_PROMINENCE_DB,
+                       min_gap_ms: float = es.MIN_PEAK_GAP_MS) -> list[dict]:
+    """Two human-review queues from a list of snap_v2 DOWN results (pure, no IO).
+
+    (A) low_prom:   range_db < min_prom_db -> suspected noise / weak transient (the
+        §3 存疑 criterion; ~24% of pre-confirmation seeds).
+    (B) sub30_pair: a snapped onset whose nearest neighbour is < min_gap_ms away ->
+        over-detection ceiling. The 30 ms merge is at PEAK level; after backtracking,
+        onset-level down->down gaps can be closer (see snap-v1-clean-audit.md), and a
+        human prunes the spurious member. Both members of a close pair are flagged.
+
+    Returns dicts {sample, reason, value} sorted by (sample, reason); value =
+    range_db (dB) for low_prom, nearest-neighbour gap (ms) for sub30_pair. A sample
+    may appear under BOTH reasons (low AND close) — kept as two rows.
+    """
+    flags: list[dict] = []
+    for r in results:
+        if r.range_db < min_prom_db:
+            flags.append({"sample": int(r.sample), "reason": "low_prom",
+                          "value": round(float(r.range_db), 2)})
+    onsets = np.sort(np.asarray([int(r.sample) for r in results]))
+    if len(onsets) >= 2:
+        gprev = np.r_[np.inf, np.diff(onsets)] / sr * 1000.0   # gap to left neighbour
+        gnext = np.r_[np.diff(onsets), np.inf] / sr * 1000.0   # gap to right neighbour
+        gmin = np.minimum(gprev, gnext)
+        for s, g in zip(onsets, gmin):
+            if g < min_gap_ms:
+                flags.append({"sample": int(s), "reason": "sub30_pair",
+                              "value": round(float(g), 2)})
+    return sorted(flags, key=lambda d: (d["sample"], d["reason"]))
+
+
+def write_review_csv(flags: list[dict], out_csv: Path, sr: int) -> None:
+    """Write a per-file adjudication queue, sorted by sample, Sonic-Visualiser-loadable.
+
+    Columns: sample,time_s,type,reason,value (type is always `down` — only down
+    candidates are切点). Load in SV by time_s as a point layer to裁决 each item.
+    """
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    flags = sorted(flags, key=lambda d: (d["sample"], d["reason"]))
+    with open(out_csv, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(_REVIEW_FIELDS)
+        for d in flags:
+            w.writerow([d["sample"], f"{d['sample'] / sr:.6f}", "down",
+                        d["reason"], d["value"]])
+
+
+def adjudication_report(name: str | None = None) -> Path:
+    """Build the two data-tail queues for all 4 files; write docs/adjudication-queue.md
+    + labels/<name>.review.csv (regenerated, never hand-edited — re-run overwrites).
+
+    `name` is accepted for CLI-dispatch uniformity but ignored — this is a whole-
+    corpus worklist. DOWN marks only (matches the §3.1 / clean_audit 口径); snap_v2
+    windows still use ALL marks. The rule only FLAGS; a human prunes against the audio.
+    """
+    recs = []
+    for nm in AUDIT_FILES:
+        y, sr, env = _load_env(nm)
+        marks, types = _seed_marks(nm)
+        down_idx = np.where(np.asarray([t == "down" for t in types]))[0]
+        v2 = snap.snap_v2_marks(env, marks, sr)             # windows need all marks
+        down_res = [v2[i] for i in down_idx]
+        flags = adjudication_flags(down_res, sr)
+        out_csv = LABELS_DIR / f"{nm}.review.csv"
+        write_review_csv(flags, out_csv, sr)
+
+        n_down = int(len(down_idx))
+        n_low = sum(1 for d in flags if d["reason"] == "low_prom")
+        n_sub = sum(1 for d in flags if d["reason"] == "sub30_pair")
+        recs.append({"name": nm, "n_down": n_down, "n_low": n_low, "n_sub": n_sub,
+                     "low_pct": 100.0 * n_low / max(n_down, 1), "out": out_csv})
+        print(f"[adjudication] {nm}: n_down={n_down} low_prom={n_low} "
+              f"({100*n_low/max(n_down,1):.1f}%) sub30_pair={n_sub} -> "
+              f"{out_csv.relative_to(REPO)}")
+
+    tot_down = sum(r["n_down"] for r in recs)
+    tot_low = sum(r["n_low"] for r in recs)
+    tot_sub = sum(r["n_sub"] for r in recs)
+    agg_low = 100.0 * tot_low / max(tot_down, 1)
+    rows = "\n".join(
+        f"| {r['name']} | {r['n_down']} | {r['n_low']} ({r['low_pct']:.1f}%) | "
+        f"{r['n_sub']} | `labels/{r['name']}.review.csv` |" for r in recs)
+
+    md = f"""# 数据尾巴人工裁决队列（adjudication queue）
+
+**日期：** 2026-06-12
+**分支：** snap-v1-clean-audit
+**生成：** `python src/guardrails.py adjudication`（数字与 CSV 由脚本写入，勿手改——重跑覆盖）
+
+## 背景
+
+snap_v2 冻结后（`annotation-protocol.md` §3），种子尚未经人工确认，仍含两类需人工裁决的尾巴。
+规则**只标记、不删除**——与 §3.1 / §5.1「人只复核存疑」一致。逐项裁决在 Sonic Visualiser 里
+加载 `labels/<name>.review.csv`（按 `time_s` 作点层）对着原音频进行。
+
+- **(A) 低突出度（low_prom）：** snap_v2 峰前动态范围 `range_db < {snap.MIN_PROMINENCE_DB:g} dB`
+  （§3 存疑判据）。弱瞬态 / 紧贴前一瞬态拖尾 / 疑似噪声候选。
+- **(B) sub-30 ms 近距对（sub30_pair）：** 相邻 down onset 间距 `< {es.MIN_PEAK_GAP_MS:g} ms`。
+  30 ms 合并在**峰值级**，onset 回溯后仍可更近——这些是**过检上界**，由人工裁掉多余的一个。
+
+## 队列规模
+
+| file | n_down | 低突出度 low_prom | sub-30 ms 近距对 | 复核工作件 |
+|---|--:|--:|--:|---|
+{rows}
+| **合计** | {tot_down} | {tot_low} ({agg_low:.1f}%) | {tot_sub} | — |
+
+- 低突出度合计 **{agg_low:.1f}%**，与 `snap-v1-clean-audit.md` 的 snap_v2 doubt 率（~24%）同口径。
+- `value` 列：`low_prom` = `range_db`(dB)；`sub30_pair` = 到最近邻 onset 的间距(ms)。
+
+## 裁决口径
+
+- **low_prom：** 看该 onset 处是否真有一次点击的主瞬态。是 → 改 `确定` 保留；
+  否（噪声 / 干扰）→ 删除。复核手段见 §5.1（后续 60–150 ms 内是否跟一个更弱的 up）。
+- **sub30_pair：** 判断两个挨得过近的 down 是否同一次点击被切成两个。是 → 删较弱的一个；
+  确为两次独立快速点击 → 都保留。
+
+> 方法学注：规则不可自动删点（避免把真点击误删），只把人工注意力收敛到这两类尾巴。
+> 逐文件 CSV 见 `labels/<name>.review.csv`（受版本控制，与 gitignored 的 `*.seed.csv` 不同）。
+"""
+    md_path = REPO / "docs" / "adjudication-queue.md"
+    md_path.write_text(md, encoding="utf-8")
+    print(f"\n[adjudication] 合计 n_down={tot_down} | low_prom={tot_low} "
+          f"({agg_low:.1f}%) | sub30_pair={tot_sub} -> {md_path.relative_to(REPO)}")
+    return md_path
+
+
 def main(argv: list[str]) -> None:
     if argv:
         cmd, *rest = argv
         name = rest[0] if rest else "BJ_C3"
         {"overlay": overlay_snaps, "sensitivity": sensitivity,
-         "margin": calibrate_margin, "clean_audit": clean_audit_report}[cmd](name)
+         "margin": calibrate_margin, "clean_audit": clean_audit_report,
+         "adjudication": adjudication_report}[cmd](name)
         return
     for nm in ("BJ_C3", "BJ_C1"):
         overlay_snaps(nm)

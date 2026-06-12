@@ -166,6 +166,39 @@ def test_seed_cleanliness_invariants():
           f"(no dup / no 6-11 ms / all >= {es.MIN_PEAK_GAP_MS:g} ms)")
 
 
+def test_adjudication_flags():
+    """Locks the two data-tail queues (guardrails.adjudication_flags): low-prominence
+    (range_db < 12 dB) and sub-30 ms adjacent down-onset pairs. Prominent, well-
+    separated onsets must appear in NEITHER queue."""
+    import guardrails as gr                                # noqa: E402
+
+    ms = lambda x: round(x / 1000 * SR)
+
+    def mk(sample: int, range_db: float) -> snap.SnapV2Result:
+        return snap.SnapV2Result(
+            sample=sample, confidence="存疑" if range_db < snap.MIN_PROMINENCE_DB
+            else "确定", peak=sample + 10, peak_amp=1.0, threshold=0.5,
+            range_db=range_db, win=(0, sample + 20),
+            fallback=range_db < snap.MIN_PROMINENCE_DB)
+
+    res = [
+        mk(10_000, 8.0),                 # low prominence, far from neighbours
+        mk(40_000, 20.0),                # close pair member (prominent)
+        mk(40_000 + ms(20), 15.0),       # 20 ms after -> sub-30 ms pair
+        mk(90_000, 18.0),                # clean: prominent AND well separated
+    ]
+    flags = gr.adjudication_flags(res, SR)
+    low = {d["sample"] for d in flags if d["reason"] == "low_prom"}
+    sub = {d["sample"] for d in flags if d["reason"] == "sub30_pair"}
+
+    assert low == {10_000}, f"low_prom queue wrong: {low}"
+    assert sub == {40_000, 40_000 + ms(20)}, f"sub30_pair queue wrong: {sub}"
+    assert 90_000 not in low and 90_000 not in sub, "clean onset must not be flagged"
+    sub_val = next(d["value"] for d in flags if d["reason"] == "sub30_pair")
+    assert abs(sub_val - 20.0) < 0.2, f"sub30 gap value off: {sub_val}"
+    print(f"ok  adjudication flags (low_prom={sorted(low)}, sub30_pair={sorted(sub)})")
+
+
 if __name__ == "__main__":
     test_db_helpers()
     test_synthetic_onset()
@@ -176,4 +209,5 @@ if __name__ == "__main__":
     test_merge_close_peaks()
     test_precursor_defeats_v1_not_v2()
     test_seed_cleanliness_invariants()
+    test_adjudication_flags()
     print("\nALL PASS")
