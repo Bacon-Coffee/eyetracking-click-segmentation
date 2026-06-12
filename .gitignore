@@ -1,1 +1,11 @@
 .DS_Store
+.claude
+.vscode
+
+# decode outputs (large, reproducible from m4a)
+data/wav/
+figures/
+
+# python
+__pycache__/
+.ipynb_checkpoints/

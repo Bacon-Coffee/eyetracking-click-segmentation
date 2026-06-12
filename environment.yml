@@ -1,0 +1,14 @@
+name: click-sed
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - librosa
+  - numpy
+  - scipy
+  - pysoundfile     # conda-forge name for the python `soundfile` module (pulls libsndfile)
+  - matplotlib
+  - mir_eval
+  - ffmpeg          # bundled in-env, version pinned with the project, no system pollution
+  - jupyter
+  - ipykernel
