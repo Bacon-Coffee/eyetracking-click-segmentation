@@ -36,14 +36,16 @@
 ## 3. Goal & Precision Requirement / 目标与精度要求
 
 **EN —**
-- **Target event:** a single mouse click (the "double-click interval pairing" step is used only for de-duplication / rejecting spurious neighbors, not as the core target).
+- **Target event:** a single mouse click, represented by its **down (press) onset**. A physical click has two transients — down (press) and up (release), ~60–150 ms apart; **up is a secondary annotation, not a cut point or a separate target event**. The "down → up within 60–150 ms" pairing is used only for verification / de-duplication, not as the core target.
+- **Cut point:** the **down onset sample** — this is what the pipeline aligns to and the only thing scored.
 - **Output:** the recording is split into multiple audio segments, each boundary at a click's precise onset sample.
-- **Precision:** "as precise as possible" is quantified as the **onset timing error in milliseconds** against human annotations.
+- **Precision:** "as precise as possible" is quantified as the **onset timing error in milliseconds** against human annotations. The annotation reference point is the **energy-rise onset (not the peak)**; see [`docs/annotation-protocol.md`](docs/annotation-protocol.md).
 
 **中 —**
-- **目标事件：** 单次鼠标点击（"双击间隔配对"仅用于去重 / 剔除相邻误检，不是核心目标）。
+- **目标事件：** 单次鼠标点击，以其 **down（按下）onset 为代表**。一次物理点击含 down（按下）+ up（抬起）两个瞬态，相隔约 60–150 ms；**up 是次要标注，不是切点、也不是独立目标事件**。"down 后 60–150 ms 内应有 up"的配对仅用于校验 / 去重，不是核心目标。
+- **切点：** **down onset 样本**——流水线对齐的目标，也是唯一计分对象。
 - **输出：** 把录音切成多个音频片段，每个边界落在某次点击的精确起跳采样点。
-- **精度：** "越精确越好"量化为相对人工标注的 **onset 时间误差（毫秒）**。
+- **精度：** "越精确越好"量化为相对人工标注的 **onset 时间误差（毫秒）**。标注参考点取**能量起跳点（非峰值）**；详见 [`docs/annotation-protocol.md`](docs/annotation-protocol.md)。
 
 ---
 
@@ -67,9 +69,29 @@
 
 ## 5. Evaluation / 评估方案
 
-**EN —** Human-annotated click times serve as ground truth. We use `mir_eval.onset` to compute **F-measure** and **onset timing error (ms)**, so that any change to the pipeline can be measured objectively.
+**EN —** Human-annotated click times serve as ground truth. We use `mir_eval.onset` to compute **F-measure** (at tight tolerances, e.g. 5 ms / 10 ms) and the **onset timing error distribution (median, p95, in ms)**, so that any change to the pipeline can be measured objectively. Only `down` rows are scored; `up` is for verification only.
 
-**中 —** 以人工标注的点击时间作为 ground truth，使用 `mir_eval.onset` 计算 **F-measure** 与 **onset 时间误差（ms）**，从而客观衡量流水线的每一次改动。
+Labels live in `labels/<wav_basename>.csv` (one file per `data/wav/*.wav`), columns `sample,time_s,type,confidence`:
+
+```
+sample,time_s,type,confidence
+12345,0.257188,down,确定
+19632,0.409000,up,存疑
+```
+
+The full口径 — event semantics, the energy-rise onset definition, and the frozen `snap_v1` snapping rule — is in [`docs/annotation-protocol.md`](docs/annotation-protocol.md); the format quick-reference is in [`labels/README.md`](labels/README.md).
+
+**中 —** 以人工标注的点击时间作为 ground truth，使用 `mir_eval.onset` 计算**紧容差下的 F-measure**（如 5 ms / 10 ms）与 **onset 误差分布（中位数、p95，ms）**，从而客观衡量流水线的每一次改动。只有 `down` 行计分，`up` 仅供校验。
+
+标注存于 `labels/<wav_basename>.csv`（每个 `data/wav/*.wav` 一个文件），列为 `sample,time_s,type,confidence`：
+
+```
+sample,time_s,type,confidence
+12345,0.257188,down,确定
+19632,0.409000,up,存疑
+```
+
+完整口径（事件语义、能量起跳点 onset 定义、冻结的 `snap_v1` 吸附规则）见 [`docs/annotation-protocol.md`](docs/annotation-protocol.md)；格式速查见 [`labels/README.md`](labels/README.md)。
 
 ---
 
