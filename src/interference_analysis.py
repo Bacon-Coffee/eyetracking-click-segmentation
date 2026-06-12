@@ -35,6 +35,8 @@ def highpass(y, sr, fc=2000.0, order=4):
     return sps.sosfiltfilt(sos, y).astype(np.float32)
 
 def envelope(y, sr, smooth_ms=1.0):
+    # mean-abs envelope, tuned to detect_peaks' 0.12*max threshold; kept as-is.
+    # The canonical SED envelope (snap_v1 / protocol §5.1) is RMS: see dsp.rms_envelope.
     e = np.abs(y)
     n = max(1, int(sr * smooth_ms / 1000))
     return sps.convolve(e, np.ones(n) / n, mode="same")
@@ -102,64 +104,72 @@ def coverage_seconds(peaks, mask, sr, pad_ms=10.0):
     total = sum(b - a for a, b in ivals) / sr
     return total, ivals
 
-results = {}
-fig, axes = plt.subplots(2, 4, figsize=(20, 7))
-for col, w in enumerate(sorted(WAV_DIR.glob("*.wav"))):
-    y, sr = load(w)
-    hp = highpass(y, sr)
-    env = envelope(hp, sr)
-    peaks = detect_peaks(env, sr)
-    mask = group_trains(peaks, sr)
-    n_train, n_click = int(mask.sum()), int((~mask).sum())
+def main():
+    # Script body guarded under __main__ so importing this module (for detect_peaks /
+    # group_trains / highpass / envelope) does NOT re-run the full analysis or rewrite
+    # the figure. `python src/interference_analysis.py` behaves exactly as before.
+    results = {}
+    fig, axes = plt.subplots(2, 4, figsize=(20, 7))
+    for col, w in enumerate(sorted(WAV_DIR.glob("*.wav"))):
+        y, sr = load(w)
+        hp = highpass(y, sr)
+        env = envelope(hp, sr)
+        peaks = detect_peaks(env, sr)
+        mask = group_trains(peaks, sr)
+        n_train, n_click = int(mask.sum()), int((~mask).sum())
 
-    iv = np.diff(peaks) / sr * 1000.0
-    train_iv = iv[mask[:-1] & mask[1:]] if len(iv) else np.array([])
-    period_ms = float(np.median(train_iv)) if len(train_iv) else float("nan")
+        iv = np.diff(peaks) / sr * 1000.0
+        train_iv = iv[mask[:-1] & mask[1:]] if len(iv) else np.array([])
+        period_ms = float(np.median(train_iv)) if len(train_iv) else float("nan")
 
-    cov_s, ivals = coverage_seconds(peaks, mask, sr)
-    dur = len(y) / sr
+        cov_s, ivals = coverage_seconds(peaks, mask, sr)
+        dur = len(y) / sr
 
-    # autocorrelation on densest interference second for an independent period check
-    ac_period = float("nan")
-    if len(ivals):
-        widths = [(b - a) for a, b in ivals]
-        a0, b0 = ivals[int(np.argmax(widths))]
-        mid = (a0 + b0) // 2
-        seg = env[max(0, mid - sr // 2) : mid + sr // 2].astype(np.float64)
-        seg = seg - seg.mean()
-        ac = np.correlate(seg, seg, "full")[len(seg) - 1 :]
-        lo, hi = int(sr * 0.005), int(sr * 0.015)
-        if hi < len(ac):
-            ac_period = (lo + int(np.argmax(ac[lo:hi]))) / sr * 1000.0
+        # autocorrelation on densest interference second for an independent period check
+        ac_period = float("nan")
+        if len(ivals):
+            widths = [(b - a) for a, b in ivals]
+            a0, b0 = ivals[int(np.argmax(widths))]
+            mid = (a0 + b0) // 2
+            seg = env[max(0, mid - sr // 2) : mid + sr // 2].astype(np.float64)
+            seg = seg - seg.mean()
+            ac = np.correlate(seg, seg, "full")[len(seg) - 1 :]
+            lo, hi = int(sr * 0.005), int(sr * 0.015)
+            if hi < len(ac):
+                ac_period = (lo + int(np.argmax(ac[lo:hi]))) / sr * 1000.0
 
-    f_i, S_i, n_i = avg_spectrum(hp, peaks[mask], sr)
-    f_c, S_c, n_c = avg_spectrum(hp, peaks[~mask], sr)
+        f_i, S_i, n_i = avg_spectrum(hp, peaks[mask], sr)
+        f_c, S_c, n_c = avg_spectrum(hp, peaks[~mask], sr)
 
-    results[w.stem] = dict(dur=dur, peaks=len(peaks), train=n_train, click=n_click,
-                           period=period_ms, ac_period=ac_period,
-                           cov_s=cov_s, cov_pct=100 * cov_s / dur, n_seg=len(ivals))
+        results[w.stem] = dict(dur=dur, peaks=len(peaks), train=n_train, click=n_click,
+                               period=period_ms, ac_period=ac_period,
+                               cov_s=cov_s, cov_pct=100 * cov_s / dur, n_seg=len(ivals))
 
-    ax = axes[0, col]
-    t = peaks / sr
-    ax.scatter(t[~mask], np.ones(n_click), s=2, label=f"click cand. ({n_click})")
-    ax.scatter(t[mask], np.zeros(n_train), s=2, color="r", label=f"train ({n_train})")
-    ax.set(title=f"{w.stem}", xlabel="time (s)", yticks=[])
-    ax.legend(fontsize=7, loc="center right")
+        ax = axes[0, col]
+        t = peaks / sr
+        ax.scatter(t[~mask], np.ones(n_click), s=2, label=f"click cand. ({n_click})")
+        ax.scatter(t[mask], np.zeros(n_train), s=2, color="r", label=f"train ({n_train})")
+        ax.set(title=f"{w.stem}", xlabel="time (s)", yticks=[])
+        ax.legend(fontsize=7, loc="center right")
 
-    ax = axes[1, col]
-    if n_i:
-        ax.semilogy(f_i, S_i + 1e-9, "r", lw=0.8, label=f"interference avg (n={n_i})")
-    ax.semilogy(f_c, S_c + 1e-9, "b", lw=0.8, alpha=0.7, label=f"non-train avg (n={n_c})")
-    ax.set(xlim=(0, 16000), xlabel="Hz")
-    ax.legend(fontsize=7)
+        ax = axes[1, col]
+        if n_i:
+            ax.semilogy(f_i, S_i + 1e-9, "r", lw=0.8, label=f"interference avg (n={n_i})")
+        ax.semilogy(f_c, S_c + 1e-9, "b", lw=0.8, alpha=0.7, label=f"non-train avg (n={n_c})")
+        ax.set(xlim=(0, 16000), xlabel="Hz")
+        ax.legend(fontsize=7)
 
-fig.suptitle("Periodic interference vs click candidates (HP 2 kHz)")
-fig.tight_layout()
-fig.savefig(FIG_DIR / "interference_analysis.png", dpi=90)
+    fig.suptitle("Periodic interference vs click candidates (HP 2 kHz)")
+    fig.tight_layout()
+    fig.savefig(FIG_DIR / "interference_analysis.png", dpi=90)
 
-hdr = f"{'file':10s}{'dur_s':>7s}{'peaks':>7s}{'train':>7s}{'click':>7s}{'T_ms':>7s}{'T_ac':>7s}{'cov_s':>8s}{'cov_%':>7s}{'n_seg':>7s}"
-print(hdr)
-print("-" * len(hdr))
-for k, r in results.items():
-    print(f"{k:10s}{r['dur']:7.1f}{r['peaks']:7d}{r['train']:7d}{r['click']:7d}"
-          f"{r['period']:7.2f}{r['ac_period']:7.2f}{r['cov_s']:8.1f}{r['cov_pct']:7.1f}{r['n_seg']:7d}")
+    hdr = f"{'file':10s}{'dur_s':>7s}{'peaks':>7s}{'train':>7s}{'click':>7s}{'T_ms':>7s}{'T_ac':>7s}{'cov_s':>8s}{'cov_%':>7s}{'n_seg':>7s}"
+    print(hdr)
+    print("-" * len(hdr))
+    for k, r in results.items():
+        print(f"{k:10s}{r['dur']:7.1f}{r['peaks']:7d}{r['train']:7d}{r['click']:7d}"
+              f"{r['period']:7.2f}{r['ac_period']:7.2f}{r['cov_s']:8.1f}{r['cov_pct']:7.1f}{r['n_seg']:7d}")
+
+
+if __name__ == "__main__":
+    main()

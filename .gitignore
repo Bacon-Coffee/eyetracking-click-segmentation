@@ -4,7 +4,14 @@
 
 # decode outputs (large, reproducible from m4a)
 data/wav/
-figures/
+figures/*
+# keep the one interference evidence figure referenced by the protocol / CLAUDE.md
+# (ignore figures/ CONTENTS, not the dir itself, so this negation can re-include it)
+!figures/interference_analysis.png
+
+# generated coarse seeds (reproducible via `python src/export_seeds.py`);
+# human-reviewed ground-truth labels/<name>.csv are NOT ignored
+labels/*.seed.csv
 
 # python
 __pycache__/
