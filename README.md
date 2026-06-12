@@ -6,8 +6,6 @@
 
 ---
 
-## English
-
 ### 1. Background
 
 The experiment records two separate streams:
