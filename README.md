@@ -16,18 +16,18 @@ The experiment records two separate streams:
 
 The two streams must be merged afterwards. The anchor we use is a behavioral event present in both: **during the experiment, the participant clicks the mouse to advance to the next question, and the screen switches at (almost) the same moment.** The click is audible in the audio; the question switch is visible in the video. Detecting the click in the audio therefore gives us the alignment points needed to merge the streams.
 
-#### Why human + code, rather than purely manual — or purely a model?
+#### Why human + code, rather than purely manual — or purely a pre-trained model?
 
-**Purely manual doesn't reach the precision target.** A click transient lasts only 2–5 ms. Across the corpus there are thousands of transients (~1,800+ down candidates), and a human placing marks by eye in a waveform editor is reliable to roughly ±10–20 ms at best, with jitter that varies between annotators and across the session. Worse, "where exactly the onset is" on a sharp transient is a *convention*, not an observable fact — two careful people will pick different samples. Manual placement is also irreproducible: nobody can re-derive or audit a hand-picked sample index.
+**Doing it all by hand isn't precise enough.** A mouse click lasts only a few thousandths of a second, and the recordings contain thousands of click-like sounds. Looking at the waveform and placing a mark by eye, a person is off by about 10–20 ms — too coarse for our goal — and different people (or the same person when tired) place the mark slightly differently. A hand-placed mark also can't be checked or reproduced later.
 
-**Purely model-based doesn't either.** Pre-trained audio taggers (e.g. PANNs) operate on spectrogram frames with ~10 ms+ hops and are trained for clip/frame-level *classification* ("a click occurred somewhere here"), not sample-accurate *localization*; their outputs are inherently smeared over the analysis window. With only 4 recordings there is also no training data to fine-tune a localizer. Classical DSP, by contrast, works directly on the 48 kHz waveform and is deterministic, interpretable, and tunable to this exact transient shape — which is why such models are at most an optional verifier here (step 4), never the localizer.
+**Letting a pre-trained model do it all isn't precise enough either.** Pre-trained audio models (e.g. PANNs) are good at answering *"is there a click around here?"*, but only to within a few tens of milliseconds — they were built to recognize sounds, not to pinpoint the exact moment a sound starts. We also have just 4 recordings, far too little data to train our own model. Classical signal processing works directly on the raw waveform, so it can pinpoint the start of a click much more precisely, and it always gives the same answer for the same input.
 
-**So the labor is split by comparative advantage:**
+**So we split the work between the two:**
 
-- **Code does what needs precision and consistency:** decode to a canonical PCM domain; detect candidate transients (spectral flux + HFC); snap every confirmed mark to its exact onset sample with one frozen deterministic rule (`snap_v2`) so all ~2,500 marks share a single onset convention; verify candidates by template matching with data-driven thresholds; de-duplicate near pairs; cut in the PCM domain with bit-exact assertions.
-- **Humans do what needs judgment:** confirm that each real click has exactly one mark (a count prior the snapping window-clamp relies on — placement only needs to land within ±20 ms); adjudicate the cases the code flags as uncertain (low-prominence transients, sub-30 ms near pairs); and decide *which* clicks are the 7 question-switch markers — a semantic judgment about the experiment that no signal feature can make.
+- **The code does the precise, repetitive work:** scan the audio and propose likely clicks; take each human-confirmed click and pin it to its exact starting moment using one fixed rule (so every mark is placed the same way); filter out false alarms (keyboard taps, table knocks, etc.); and cut the audio exactly at those points.
+- **The human does the judgment work:** confirm "yes, this is a real click" — a rough mark anywhere near it is enough, the code sharpens it; review the small number of cases the code flags as uncertain; and decide *which* 7 clicks are the ones that switched the question — that requires knowing the experiment, which no algorithm can.
 
-In short: humans supply *semantics and counts*, code supplies *samples and reproducibility*. Neither alone meets both requirements.
+In one line: **people judge, code measures.** Each side does what the other can't.
 
 ### 2. Task
 
@@ -149,18 +149,18 @@ pytest                      # frozen-logic tests (snap_v2 / verify / cut)
 
 两路数据事后需要合并。我们利用一个在两路中都存在的行为事件作为对齐锚点：**实验中受试者点击鼠标切换到下一题，屏幕（几乎）同时切换显示新题目。** 点击声出现在音频里，题目切换出现在视频里——在音频中识别出点击事件，即可得到合并所需的对齐点。
 
-#### 思考：为什么是"人工 + 代码"，而不是纯人工、也不是纯模型？
+#### 思考：为什么是"人工 + 代码"，而不是纯人工、也不是纯预训练模型（pre-trained model）？
 
-**纯人工达不到精度目标。** 一次点击瞬态只有 2–5 ms；全语料有数千个瞬态（down 候选 1800+），人在波形编辑器里目测放标记，可靠精度大约只有 ±10–20 ms，且抖动随标注者、随疲劳程度变化。更根本的是，尖锐瞬态上"onset 到底在哪个样本"本质是**约定**而非客观事实——两个认真的人会选出不同的样本。手工定位还不可复现：没人能复推或审计一个手抠出来的样本索引。
+**全靠人工，精度不够。** 一次鼠标点击只持续几毫秒，而录音里有上千个疑似点击的声音。人盯着波形图用眼睛放标记，误差大约有 10–20 ms，达不到我们的精度目标；而且不同的人（甚至同一个人累了之后）放的位置都不一样。手工放的标记事后也没法核对、没法重做出同样的结果。
 
-**纯模型同样达不到。** 预训练音频标注模型（如 PANNs）在 ≥10 ms hop 的频谱帧上工作，训练目标是 clip/帧级**分类**（"这附近发生了一次点击"），而非样本级**定位**，输出天然被分析窗涂抹；且本项目只有 4 段录音，没有数据可微调一个定位器。相比之下，经典 DSP 直接在 48 kHz 波形上运算，确定性、可解释、可针对这种瞬态形状精确调参——所以深度模型在本项目至多作第 4 步的可选校验器，绝不做定位器。
+**全靠预训练模型，精度也不够。** 现成的预训练音频模型（如 PANNs）擅长回答"这附近有没有一次点击"，但只能精确到几十毫秒——它们是为"识别声音是什么"设计的，不是为"精确定位声音从哪一刻开始"设计的。而且我们只有 4 段录音，远不够训练自己的模型。经典信号处理直接在原始波形上计算，能把点击的起始点定得精确得多，而且同样的输入永远得到同样的结果。
 
-**于是按比较优势分工：**
+**所以把工作拆给两边：**
 
-- **代码做需要精度和一致性的事：** 解码到统一 PCM 域；检出候选瞬态（spectral flux + HFC）；用一条冻结的确定性规则（`snap_v2`）把每个已确认标记吸附到精确 onset 样本，使全部约 2500 个标记共享同一 onset 口径；模板匹配 + 数据驱动阈值做校验；近距对去重；PCM 域切割并做 bit-exact 断言。
-- **人做需要判断力的事：** 确认"每个真实点击恰好一个标记"（这是吸附规则窗口钳位依赖的计数先验——标记只需落在 ±20 ms 内）；裁决代码标为存疑的项（低突出度瞬态、sub-30 ms 近距对）；以及判断**哪 7 次**点击是切题标记——这是关于实验本身的语义判断，任何信号特征都做不了。
+- **代码做精确、重复性的活：** 扫描音频，找出疑似点击；把每个人工确认过的点击，用同一条固定规则钉到精确的起始时刻（保证所有标记口径一致）；过滤误报（键盘声、敲桌声等）；最后在这些点上精确切割音频。
+- **人做需要判断力的活：** 确认"这确实是一次真实点击"——只需在它附近随手放个粗略标记，精确位置由代码完成；复核代码标为"拿不准"的少数项；以及判断**哪 7 次**点击是切换题目的那几次——这需要了解实验本身，算法做不到。
 
-一句话：人提供**语义与计数**，代码提供**样本与可复现性**——单靠任何一方都无法同时满足这两类要求。
+一句话：**人负责判断，代码负责测量**——各做对方做不了的事。
 
 ### 2. 任务
 
