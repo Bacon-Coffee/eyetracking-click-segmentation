@@ -7,9 +7,17 @@ pre-snap candidates so a human can confirm/add/delete/coarse-adjust, after which
 Stages:
   1. Coarse peak detect            -> reuse interference_analysis.detect_peaks
   2. Reject 7-10 ms periodic trains-> reuse interference_analysis.group_trains
-  3. §5.1 deterministic down/up    -> greedy pairing on the CANONICAL HP2k/1ms-RMS
+  3. Min-gap merge (30 ms)         -> peaks closer than the protocol's safe
+                                      click-to-click floor collapse to the strongest
+                                      (kills duplicate/split candidates + residual
+                                      6-11 ms interference pairs that escaped #2)
+  4. §5.1 deterministic down/up    -> greedy pairing on the CANONICAL HP2k/1ms-RMS
      assignment                       envelope amplitude (dsp.hp_rms_envelope)
-  4. Write labels/<name>.seed.csv  -> protocol-format CSV (one format seed + final)
+  5. Write labels/<name>.seed.csv  -> protocol-format CSV, deduped, one row per
+                                      candidate transient, positioned at the
+                                      snap_v2-style onset so SV review marks sit
+                                      right on the foot (final positions are still
+                                      recomputed by snap.py AFTER human confirmation)
 
 The §5.1 amplitude MUST be the same envelope snap_v1 uses — see dsp.hp_rms_envelope.
 The mean-abs envelope is used ONLY to drive detect_peaks (its 0.12*max threshold is
@@ -35,6 +43,7 @@ import numpy as np
 
 import dsp
 import interference_analysis as ia
+import snap
 
 REPO = Path(__file__).resolve().parent.parent
 WAV_DIR = REPO / "data" / "wav"
@@ -48,50 +57,67 @@ _EPS = 1e-12
 
 _FIELDS = ["sample", "time_s", "type", "confidence"]
 
+# Protocol §5: click-to-click min_gap ~30-50 ms is safe. Peaks closer than this are
+# duplicates / split transients / residual interference -> merge, keep the strongest.
+# (Safe for real down->up pairs too: those sit at 60-150 ms.)
+MIN_PEAK_GAP_MS = 30.0
 
-# A peak sits ~a few ms AFTER the onset foot; snap_v1's ±10 ms window is centered on
-# an ONSET-positioned mark, so the seed must be a coarse onset, not the peak.
-COARSE_BACKTRACK_MS = 25.0
+
+def merge_close_peaks(peaks: np.ndarray, env_rms: np.ndarray, sr: int,
+                      min_gap_ms: float = MIN_PEAK_GAP_MS) -> np.ndarray:
+    """Collapse runs of peaks closer than min_gap to the single strongest peak.
+
+    Fixes the v1-era seed pollution found in review: duplicate rows (multiple peaks
+    backtracked onto one sample) and residual 6-11 ms interference pairs. Greedy
+    left-to-right: a peak within min_gap of the current group joins it; each group
+    emits its argmax (by canonical RMS amplitude).
+    """
+    if len(peaks) == 0:
+        return peaks
+    gap = round(min_gap_ms * sr / 1000.0)
+    peaks = np.sort(np.asarray(peaks, dtype=int))
+    out, group = [], [peaks[0]]
+    for p in peaks[1:]:
+        if p - group[-1] < gap:
+            group.append(p)
+        else:
+            out.append(max(group, key=lambda q: env_rms[q]))
+            group = [p]
+    out.append(max(group, key=lambda q: env_rms[q]))
+    return np.asarray(out, dtype=int)
 
 
 def detect_candidates(y: np.ndarray, sr: int) -> tuple[np.ndarray, np.ndarray, dict]:
-    """Coarse click candidates (PEAKS) after dropping periodic-interference trains.
+    """Coarse click candidates (PEAKS): detect -> drop trains -> min-gap merge.
 
     Returns (peaks, env_rms, stats). HP is computed once and shared: the mean-abs
     envelope drives detect_peaks (calibrated to its 0.12*max threshold); the RMS
-    envelope is the canonical §5.1 amplitude AND the surface for coarse backtracking.
+    envelope is the canonical §5.1 amplitude AND the merge/seed-positioning surface.
     """
     hp = dsp.highpass(y, sr)                 # identical params to ia.highpass
     env_d = ia.envelope(hp, sr)              # mean-abs, for detect_peaks only
-    env_rms = dsp.rms_envelope(hp, sr)       # canonical §5.1 / snap_v1 amplitude
+    env_rms = dsp.rms_envelope(hp, sr)       # canonical §5.1 / snap_v2 amplitude
     peaks = ia.detect_peaks(env_d, sr)
     mask = ia.group_trains(peaks, sr)        # True = periodic-train member
     clicks = peaks[~mask]
+    merged = merge_close_peaks(clicks, env_rms, sr)
     stats = {"n_peaks": int(len(peaks)), "n_train": int(mask.sum()),
-             "n_clicks": int(len(clicks))}
-    return clicks, env_rms, stats
+             "n_clicks": int(len(merged)), "n_merged_away": int(len(clicks) - len(merged))}
+    return merged, env_rms, stats
 
 
-def coarse_onset(env: np.ndarray, peak: int, sr: int,
-                 max_back_ms: float = COARSE_BACKTRACK_MS) -> int:
-    """Backtrack a peak to a COARSE onset = quietest envelope point in the pre-peak window.
+def coarse_onset(env: np.ndarray, peak: int, sr: int) -> int:
+    """Seed position for a detected peak = snap_v2-style onset (peak -20 dB foot).
 
-    argmin over [peak - max_back, peak] lands in the "foot" before the rise — a robust
-    seed position (the detect_peaks peak sits on the mean-abs envelope and need not be
-    a clean RMS down-slope, so a gradient walk is fragile). This is a coarse seed only;
-    snap_v1 does the sample-accurate refinement with a DIFFERENT rule (+6 dB crossing),
-    so this is not circular with snap.
-
-    NOTE: real clicks here carry a pre-onset sub-transient ~15-25 ms before the main
-    peak (confirmed in raw broadband energy, not a filter artifact), so no seed escapes
-    snap_v1's high fallback rate on this data — that is a §3.1 guardrail finding, not a
-    seeding bug.
+    Positions the SV review mark right on the foot of the transient, so the human
+    mostly just confirms. NOT circular in the eval sense: final label positions are
+    recomputed by snap.py from the HUMAN-CONFIRMED marks; this only chooses where
+    the to-be-confirmed mark is displayed. (detect_peaks peaks come from the
+    mean-abs envelope, so re-argmax on the RMS envelope inside snap_v2_one also
+    cleans up the peak location.)
     """
-    lo = max(peak - round(max_back_ms * sr / 1000.0), 0)
-    seg = env[lo:int(peak) + 1]
-    if len(seg) == 0:
-        return int(peak)
-    return lo + int(np.argmin(seg))
+    lo = max(int(peak) - round(snap.WIN_HALF_MS * sr / 1000.0), 0)
+    return snap.snap_v2_one(env, (lo, int(peak)), sr).sample
 
 
 def assign_down_up(peaks: np.ndarray, env_rms: np.ndarray, sr: int,
@@ -102,7 +128,8 @@ def assign_down_up(peaks: np.ndarray, env_rms: np.ndarray, sr: int,
 
     Per §5.1 the input transient = (onset sample, peak envelope amplitude): timing /
     gaps use the coarse ONSET, the dB comparison uses the PEAK amplitude (click
-    strength). The emitted sample is the coarse onset (snap_v1 refines it later).
+    strength). The emitted sample is the seed onset (snap_v2 recomputes it from the
+    human-confirmed marks later).
 
     For transient T with a pending down D and (onset_T - onset_D) in [60,150] ms, let
     ΔdB = 20*log10(peakamp(D)/peakamp(T))  (positive => T weaker). Three-tier rule:
@@ -141,8 +168,11 @@ def assign_down_up(peaks: np.ndarray, env_rms: np.ndarray, sr: int,
 
 
 def write_seed_csv(rows: list[tuple[int, str, str]], out_csv: Path, sr: int) -> None:
+    """Write protocol-format CSV, sorted, EXACT-DUPLICATE samples dropped (keep first)."""
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     rows = sorted(rows, key=lambda r: r[0])
+    seen: set[int] = set()
+    rows = [r for r in rows if not (r[0] in seen or seen.add(r[0]))]
     with open(out_csv, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(_FIELDS)
@@ -201,14 +231,16 @@ def main(argv: list[str]) -> None:
         print(f"No WAVs found in {WAV_DIR}", file=sys.stderr)
         return
 
-    hdr = f"{'file':10s}{'peaks':>7s}{'train':>7s}{'cand':>7s}{'down':>7s}{'up':>6s}{'存疑':>6s}"
+    hdr = (f"{'file':10s}{'peaks':>7s}{'train':>7s}{'merged':>8s}{'cand':>7s}"
+           f"{'down':>7s}{'up':>6s}{'存疑':>6s}")
     print(hdr)
     print("-" * (len(hdr) + 2))
     for wav in wavs:
         s = export_one(wav)
-        print(f"{wav.stem:10s}{s['n_peaks']:7d}{s['n_train']:7d}{s['n_clicks']:7d}"
-              f"{s['n_down']:7d}{s['n_up']:6d}{s['n_doubt']:6d}")
-    print("\ndown = corrected real click count (candidates after interference removal).")
+        print(f"{wav.stem:10s}{s['n_peaks']:7d}{s['n_train']:7d}{s['n_merged_away']:8d}"
+              f"{s['n_clicks']:7d}{s['n_down']:7d}{s['n_up']:6d}{s['n_doubt']:6d}")
+    print("\ndown ~= candidate click count (after train removal + 30 ms min-gap merge);")
+    print("still an over-detection upper bound — the human prunes during review.")
     print("Seeds written to labels/<name>.seed.csv — review in Sonic Visualiser, then snap.")
 
 

@@ -79,7 +79,7 @@ sample,time_s,type,confidence
 19632,0.409000,up,存疑
 ```
 
-The full annotation protocol — event semantics, the energy-rise onset definition, and the frozen `snap_v1` snapping rule — is in [`docs/annotation-protocol.md`](docs/annotation-protocol.md); the format quick-reference is in [`labels/README.md`](labels/README.md).
+The full annotation protocol — event semantics, the energy-rise onset definition, and the frozen `snap_v2` snapping rule — is in [`docs/annotation-protocol.md`](docs/annotation-protocol.md); the format quick-reference is in [`labels/README.md`](labels/README.md).
 
 **中 —** 以人工标注的点击时间作为 ground truth，使用 `mir_eval.onset` 计算**紧容差下的 F-measure**（如 5 ms / 10 ms）与 **onset 误差分布（中位数、p95，ms）**，从而客观衡量流水线的每一次改动。只有 `down` 行计分，`up` 仅供校验。
 
@@ -91,7 +91,7 @@ sample,time_s,type,confidence
 19632,0.409000,up,存疑
 ```
 
-完整口径（事件语义、能量起跳点 onset 定义、冻结的 `snap_v1` 吸附规则）见 [`docs/annotation-protocol.md`](docs/annotation-protocol.md)；格式速查见 [`labels/README.md`](labels/README.md)。
+完整口径（事件语义、能量起跳点 onset 定义、冻结的 `snap_v2` 吸附规则）见 [`docs/annotation-protocol.md`](docs/annotation-protocol.md)；格式速查见 [`labels/README.md`](labels/README.md)。
 
 ---
 

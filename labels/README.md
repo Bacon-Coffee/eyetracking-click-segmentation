@@ -1,6 +1,6 @@
 # labels/ — 人工标注（Ground Truth）
 
-本目录存放每个录音的点击标注 CSV。**完整口径（事件语义、onset 定义、`snap_v1` 吸附规则、工作流）见 [`../docs/annotation-protocol.md`](../docs/annotation-protocol.md)，此处只给格式速查。**
+本目录存放每个录音的点击标注 CSV。**完整口径（事件语义、onset 定义、`snap_v2` 吸附规则、工作流）见 [`../docs/annotation-protocol.md`](../docs/annotation-protocol.md)，此处只给格式速查。**
 
 ## 命名与配对
 
@@ -35,4 +35,4 @@ sample,time_s,type,confidence
 
 - **切点 = `down` 行。** 只有 `down` 参与 onset 评估；`up` 尽力而为、缺失不扣分。
 - **7–10 ms 周期干扰绝不标注**（见协议第 5 节）。
-- 精确样本由 `snap_v1` 统一吸附，人工只做确认与粗调——不要手抠样本。
+- 精确样本由 `snap_v2` 统一吸附，人工只做确认与粗调——不要手抠样本。

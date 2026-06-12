@@ -1,16 +1,18 @@
-"""§3.1 pre-freeze guardrails for snap_v1 (annotation-protocol.md).
+"""§3.1 pre-freeze guardrails for snap_v2 (annotation-protocol.md).
 
-Three checks the protocol requires BEFORE freezing snap_v1 / opening annotation:
+Three checks the protocol requires BEFORE freezing snap_v2 / opening annotation:
 
-  overlay_snaps(name)   §3.1 #1 — overlay 30-50 snapped onsets on the waveform/
-                        envelope so a human can verify each lands on the true "foot"
-                        and none snap onto 7-10 ms periodic interference. Focus on the
-                        low-SNR files (BJ_C1) and the clean reference (BJ_C3).
+  overlay_snaps(name)   §3.1 #1 — overlay 30-50 snapped onsets on the envelope so a
+                        human can verify each lands on the MAIN transient's foot (not
+                        the precursor, not 7-10 ms interference). Focus on the low-SNR
+                        files (BJ_C1 / IntlSB20) and dense passages (BJ_C3).
 
-  sensitivity(name)     §3.1 #2 — re-snap at +6 dB vs +10 dB and report the PER-CLICK
-                        displacement distribution (median + p95 + max, ms) — the
-                        "口径不确定度" reported with eval. Also reports the fallback
-                        (存疑) rate, which is itself a freeze gate.
+  sensitivity(name)     §3.1 #2 — re-snap at X = 20 vs 14 and 20 vs 26 dB backtrack
+                        depth; report the PER-CLICK displacement distribution
+                        (median + p95 + max, ms) + 存疑 rate — the "口径不确定度"
+                        reported with eval. Also broken out for ISOLATED clicks
+                        (>=120 ms from both neighbours), since pre-confirmation
+                        seeds may still contain detector noise in dense spans.
 
   calibrate_margin(name)§5.1 — sweep the up/down margin on BJ_C3, report down/up/存疑
                         counts vs margin, to calibrate the 6 dB threshold.
@@ -43,11 +45,12 @@ LABELS_DIR = REPO / "labels"
 FIG_DIR = REPO / "figures"
 
 
-def _seed_downs(name: str) -> list[int]:
-    """down-row samples from labels/<name>.seed.csv (coarse onsets)."""
+def _seed_marks(name: str) -> tuple[list[int], list[str]]:
+    """ALL rows (sorted) from labels/<name>.seed.csv — windows need every mark."""
     path = LABELS_DIR / f"{name}.seed.csv"
     with open(path, newline="", encoding="utf-8") as f:
-        return [int(r["sample"]) for r in csv.DictReader(f) if r["type"] == "down"]
+        rows = sorted(csv.DictReader(f), key=lambda r: int(r["sample"]))
+    return [int(r["sample"]) for r in rows], [r["type"] for r in rows]
 
 
 def _load_env(name: str) -> tuple[np.ndarray, int, np.ndarray]:
@@ -55,103 +58,134 @@ def _load_env(name: str) -> tuple[np.ndarray, int, np.ndarray]:
     return y, sr, dsp.hp_rms_envelope(y, sr)
 
 
+def _isolated_mask(marks: list[int], sr: int, iso_ms: float = 120.0) -> np.ndarray:
+    """True where a mark is >= iso_ms from BOTH neighbours (clean calibration subset)."""
+    a = np.asarray(marks, dtype=float)
+    gp = np.r_[np.inf, np.diff(a)] / sr * 1000.0
+    gn = np.r_[np.diff(a), np.inf] / sr * 1000.0
+    return (gp >= iso_ms) & (gn >= iso_ms)
+
+
 # --- §3.1 #1: visual onset overlay --------------------------------------------
 
 def overlay_snaps(name: str, n: int = 40, start: int | None = None,
-                  half_ms: float = 15.0) -> Path:
-    """Overlay n snapped onsets on the RMS envelope (±half_ms each), grid of subplots."""
+                  half_ms: float = 20.0) -> Path:
+    """Overlay n snap_v2 onsets on the RMS envelope (log y), grid of subplots.
+
+    Per panel: green/red solid = onset (red = argmin fallback, 存疑), magenta dot =
+    main-transient peak, orange dotted = peak - 20 dB backtrack threshold, blue
+    dashed = the seed mark. Eyeball: onset must sit at the MAIN rise's foot, with
+    the precursor (if visible ~15-25 ms earlier) left OUTSIDE the cut.
+    """
     y, sr, env = _load_env(name)
-    downs = _seed_downs(name)
+    marks, _types = _seed_marks(name)
+    results = snap.snap_v2_marks(env, marks, sr)
     if start is None:                       # representative: even stride across the file
-        if len(downs) > n:
-            idx = np.linspace(0, len(downs) - 1, n).round().astype(int)
-            picks = [downs[i] for i in idx]
-        else:
-            picks = downs
+        idx = (np.linspace(0, len(marks) - 1, n).round().astype(int)
+               if len(marks) > n else np.arange(len(marks)))
     else:                                   # contiguous span (e.g. inspect a dense burst)
-        picks = downs[start:start + n]
+        idx = np.arange(start, min(start + n, len(marks)))
 
     half = int(half_ms * sr / 1000.0)
     cols = 8
-    rows = int(np.ceil(len(picks) / cols))
+    rows = int(np.ceil(len(idx) / cols))
     fig, axes = plt.subplots(rows, cols, figsize=(2.2 * cols, 1.7 * rows), squeeze=False)
     n_fb = 0
-    for k, c in enumerate(picks):
-        r = snap.snap_one(env, c, sr)
+    for k, i in enumerate(idx):
+        r, c = results[i], marks[i]
         n_fb += r.fallback
         ax = axes[k // cols][k % cols]
-        a, b = max(r.sample - half, 0), min(r.sample + half, len(env) - 1)
+        a, b = max(r.sample - half, 0), min(r.sample + 2 * half, len(env) - 1)
         t = (np.arange(a, b) - r.sample) / sr * 1000.0
-        ax.plot(t, env[a:b], lw=0.7, color="0.3")
-        ax.axhline(r.threshold, color="orange", lw=0.6, ls=":")          # +6 dB threshold
+        ax.semilogy(t, np.maximum(env[a:b], 1e-9), lw=0.7, color="0.3")
+        ax.axhline(r.threshold, color="orange", lw=0.6, ls=":")          # peak - 20 dB
         ax.axvline(0, color="g" if not r.fallback else "r", lw=1.0)      # snapped onset
-        ax.axvline((c - r.sample) / sr * 1000.0, color="b", lw=0.5, ls="--")  # coarse seed
+        ax.axvline((c - r.sample) / sr * 1000.0, color="b", lw=0.5, ls="--")  # seed mark
+        ax.plot((r.peak - r.sample) / sr * 1000.0, r.peak_amp, "m.", ms=4)    # main peak
         ax.set(xticks=[], yticks=[], title=("FB" if r.fallback else "ok"))
         ax.title.set_fontsize(6)
-    for k in range(len(picks), rows * cols):
+    for k in range(len(idx), rows * cols):
         axes[k // cols][k % cols].axis("off")
-    fig.suptitle(f"{name}: snap_v1 onsets (green=onset, blue--=seed, orange:=+6dB) "
-                 f"| {n_fb}/{len(picks)} fallback", fontsize=10)
+    fig.suptitle(f"{name}: {snap.SNAP_VERSION} (green=onset, m.=peak, blue--=seed, "
+                 f"orange:=mid-thr) | {n_fb}/{len(idx)} doubt(prom<12dB)", fontsize=10)
     fig.tight_layout()
     out = FIG_DIR / f"{name}_snap_overlay.png"
     FIG_DIR.mkdir(exist_ok=True)
     fig.savefig(out, dpi=110)
     plt.close(fig)
-    print(f"[overlay] {name}: {len(picks)} clicks (from idx {start}), "
+    print(f"[overlay] {name}: {len(idx)} marks (from idx {start}), "
           f"{n_fb} fallback -> {out.relative_to(REPO)}")
     return out
 
 
 # --- §3.1 #2: sensitivity = per-click displacement distribution ----------------
 
-def sensitivity(name: str, n: int | None = None) -> dict:
-    """Re-snap at +6 vs +10 dB; report per-click |Δonset| distribution (median/p95/max)."""
-    y, sr, env = _load_env(name)
-    downs = _seed_downs(name)
-    if n:
-        downs = downs[:n]
-
-    disp_ms, fb6, fb10 = [], 0, 0
-    for c in downs:
-        r6 = snap.snap_one(env, c, sr, thresh_db=6.0)
-        r10 = snap.snap_one(env, c, sr, thresh_db=10.0)
-        fb6 += r6.fallback
-        fb10 += r10.fallback
-        if not r6.fallback and not r10.fallback:      # displacement only for clean both
-            disp_ms.append((r10.sample - r6.sample) / sr * 1000.0)
-    d = np.asarray(disp_ms)
+def _disp_stats(base, alt, sr) -> dict:
+    """Per-click displacement stats between two same-length result lists."""
+    pairs = [(b, a) for b, a in zip(base, alt) if not b.fallback and not a.fallback]
+    d = np.asarray([(a.sample - b.sample) / sr * 1000.0 for b, a in pairs])
     ad = np.abs(d)
-    stats = {
-        "n": len(downs), "n_clean_both": len(d),
-        "fallback_6dB": fb6, "fallback_10dB": fb10,
+    return {
+        "n_clean_both": len(d),
         "abs_median_ms": float(np.median(ad)) if len(ad) else float("nan"),
         "abs_p95_ms": float(np.percentile(ad, 95)) if len(ad) else float("nan"),
         "abs_max_ms": float(ad.max()) if len(ad) else float("nan"),
         "signed_median_ms": float(np.median(d)) if len(d) else float("nan"),
+        "d": d,
     }
 
-    print(f"[sensitivity] {name}: clicks={stats['n']} "
-          f"clean(6&10)={stats['n_clean_both']} "
-          f"fallback@6dB={fb6} ({100*fb6/max(stats['n'],1):.0f}%) "
-          f"fallback@10dB={fb10}")
-    print(f"  |Δonset| 6->10 dB: median={stats['abs_median_ms']:.2f} "
-          f"p95={stats['abs_p95_ms']:.2f} max={stats['abs_max_ms']:.2f} ms "
-          f"(signed median={stats['signed_median_ms']:+.2f}; +10 dB later = positive)")
 
-    if len(d):
-        fig, ax = plt.subplots(figsize=(6, 3.2))
-        ax.hist(d, bins=60, color="steelblue")
-        ax.axvline(stats["signed_median_ms"], color="r", lw=1, label="median")
-        ax.set(xlabel="d_onset (ms), +10 dB minus +6 dB", ylabel="clicks",
-               title=f"{name}: snap_v1 sensitivity (calibration uncertainty)  n={len(d)}")
-        ax.legend(fontsize=8)
-        fig.tight_layout()
-        out = FIG_DIR / f"{name}_sensitivity.png"
-        FIG_DIR.mkdir(exist_ok=True)
-        fig.savefig(out, dpi=110)
-        plt.close(fig)
-        print(f"  -> {out.relative_to(REPO)}")
-    return stats
+def sensitivity(name: str, x_base: float = 0.5, x_alts=(0.35, 0.65)) -> dict:
+    """Re-snap at mid_frac=x_base vs each alt; per-click |Δonset| distribution + 存疑率.
+
+    Only `down` marks enter the statistics (ups are best-effort), but windows are
+    built from ALL marks. Also reported for the isolated (>=120 ms) subset.
+    存疑 = low prominence (range < 12 dB) — independent of mid_frac, so it is
+    reported once; the sweep measures pure calibration uncertainty of the foot.
+    """
+    y, sr, env = _load_env(name)
+    marks, types = _seed_marks(name)
+    is_down = np.asarray([t == "down" for t in types])
+    iso = _isolated_mask(marks, sr) & is_down
+
+    res = {x: snap.snap_v2_marks(env, marks, sr, mid_frac=x)
+           for x in (x_base, *x_alts)}
+    base = res[x_base]
+    n_down = int(is_down.sum())
+    fb = {x: sum(r.fallback for r, d in zip(res[x], is_down) if d) for x in res}
+    print(f"[sensitivity] {name}: downs={n_down} (isolated={int(iso.sum())}) | "
+          f"存疑(prom<12dB): {fb[x_base]} ({100*fb[x_base]/max(n_down,1):.1f}%)")
+
+    out_stats = {"n_down": n_down, "doubt": fb}
+    fig, axes = plt.subplots(1, len(x_alts), figsize=(6 * len(x_alts), 3.2), squeeze=False)
+    for j, x in enumerate(x_alts):
+        sub_all = _disp_stats([b for b, d in zip(base, is_down) if d],
+                              [a for a, d in zip(res[x], is_down) if d], sr)
+        sub_iso = _disp_stats([b for b, m in zip(base, iso) if m],
+                              [a for a, m in zip(res[x], iso) if m], sr)
+        out_stats[x] = {k: v for k, v in sub_all.items() if k != "d"}
+        out_stats[(x, "iso")] = {k: v for k, v in sub_iso.items() if k != "d"}
+        print(f"  |Δonset| mid_frac {x_base:g}->{x:g}  all-downs: "
+              f"median={sub_all['abs_median_ms']:.2f} p95={sub_all['abs_p95_ms']:.2f} "
+              f"max={sub_all['abs_max_ms']:.2f} ms (signed med "
+              f"{sub_all['signed_median_ms']:+.2f}, n={sub_all['n_clean_both']})")
+        print(f"                                isolated: "
+              f"median={sub_iso['abs_median_ms']:.2f} p95={sub_iso['abs_p95_ms']:.2f} "
+              f"max={sub_iso['abs_max_ms']:.2f} ms (n={sub_iso['n_clean_both']})")
+        ax = axes[0][j]
+        if len(sub_all["d"]):
+            ax.hist(sub_all["d"], bins=60, color="steelblue")
+            ax.axvline(sub_all["signed_median_ms"], color="r", lw=1, label="median")
+            ax.legend(fontsize=8)
+        ax.set(xlabel=f"d_onset (ms), mid_frac {x:g} minus {x_base:g}", ylabel="clicks",
+               title=f"{name}: snap_v2 sensitivity  n={len(sub_all['d'])}")
+    fig.tight_layout()
+    out = FIG_DIR / f"{name}_sensitivity.png"
+    FIG_DIR.mkdir(exist_ok=True)
+    fig.savefig(out, dpi=110)
+    plt.close(fig)
+    print(f"  -> {out.relative_to(REPO)}")
+    return out_stats
 
 
 # --- §5.1: down/up margin calibration -----------------------------------------
