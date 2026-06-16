@@ -23,3 +23,10 @@ my_documents/
 
 # cut outputs (large, reproducible via `python src/cut.py` from committed labels/*.cuts.csv)
 data/segments/
+
+# new-batch source audio (~430 MB; input data, kept out of git history to avoid bloat —
+# the small annotation source "Click Record SheetRecords.xlsx" IS committed. Track audio
+# anyway with `git add -f "new audio/<file>.m4a"` if you decide to.)
+new audio/
+
+.claude
